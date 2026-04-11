@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -44,12 +46,6 @@ func NewProvisioningClient(c client.Client) *ProvisioningClient {
 
 // UpdateBMHProvisioning updates a Bare Metal Host to provision with the specified ISO
 // It sets spec.image.url and spec.image.diskFormat to trigger live-ISO provisioning
-//
-// Note: This is a placeholder implementation. In production, this would:
-// 1. Fetch the actual Metal3 BareMetalHost CRD object
-// 2. Update spec.image.url with the ISO URL
-// 3. Set spec.image.diskFormat to "live-iso"
-// 4. Apply the update to the cluster
 func (pc *ProvisioningClient) UpdateBMHProvisioning(ctx context.Context, bmhNamespace, bmhName string, isoURL string) error {
 	if bmhNamespace == "" {
 		return fmt.Errorf("bmh namespace cannot be empty")
@@ -61,13 +57,34 @@ func (pc *ProvisioningClient) UpdateBMHProvisioning(ctx context.Context, bmhName
 		return fmt.Errorf("iso URL cannot be empty")
 	}
 
-	// Placeholder implementation
-	// In production, this would:
-	// 1. Use dynamic client or Metal3 API types to fetch the BMH
-	// 2. Update the spec.image fields
-	// 3. Patch the object in the cluster
+	// Fetch the BareMetalHost object
+	bmh := &bmov1alpha1.BareMetalHost{}
+	err := pc.c.Get(ctx, types.NamespacedName{Name: bmhName, Namespace: bmhNamespace}, bmh)
+	if err != nil {
+		return fmt.Errorf("failed to fetch BareMetalHost %s/%s: %w", bmhNamespace, bmhName, err)
+	}
 
-	fmt.Printf("Placeholder: Updating BMH %s/%s with ISO URL: %s\n", bmhNamespace, bmhName, isoURL)
+	// Save a copy of the original for the merge patch
+	original := bmh.DeepCopy()
+
+	// Update the image reference for live-ISO provisioning
+	if bmh.Spec.Image == nil {
+		bmh.Spec.Image = &bmov1alpha1.Image{}
+	}
+
+	diskFormat := "live-iso"
+	bmh.Spec.Image.URL = isoURL
+	bmh.Spec.Image.DiskFormat = &diskFormat
+
+	// Patch the BareMetalHost with the new image reference
+	err = pc.c.Patch(ctx, bmh, client.MergeFrom(original))
+	if err != nil {
+		return fmt.Errorf("failed to update BareMetalHost %s/%s: %w", bmhNamespace, bmhName, err)
+	}
+
+	fmt.Printf("Successfully updated BMH %s/%s with ISO: %s (diskFormat: live-iso)\n",
+		bmhNamespace, bmhName, isoURL)
+
 	return nil
 }
 
@@ -80,7 +97,13 @@ func (pc *ProvisioningClient) GetBMHStatus(ctx context.Context, bmhNamespace, bm
 		return "", fmt.Errorf("bmh name cannot be empty")
 	}
 
-	// Placeholder implementation
-	fmt.Printf("Placeholder: Getting BMH status for %s/%s\n", bmhNamespace, bmhName)
-	return "unknown", nil
+	// Fetch the BareMetalHost object
+	bmh := &bmov1alpha1.BareMetalHost{}
+	err := pc.c.Get(ctx, types.NamespacedName{Name: bmhName, Namespace: bmhNamespace}, bmh)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch BareMetalHost %s/%s: %w", bmhNamespace, bmhName, err)
+	}
+
+	// Return the current provisioning state
+	return string(bmh.Status.Provisioning.State), nil
 }

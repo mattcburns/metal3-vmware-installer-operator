@@ -20,11 +20,24 @@ import (
 	"context"
 	"testing"
 
+	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+func createSchemeWithBMH() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	if err := bmov1alpha1.AddToScheme(scheme); err != nil {
+		panic(err)
+	}
+	return scheme
+}
+
 func TestNewProvisioningClient(t *testing.T) {
-	c := fake.NewFakeClient()
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	pc := NewProvisioningClient(c)
 	if pc == nil {
 		t.Errorf("NewProvisioningClient returned nil")
@@ -32,7 +45,8 @@ func TestNewProvisioningClient(t *testing.T) {
 }
 
 func TestUpdateBMHProvisioningEmptyNamespace(t *testing.T) {
-	c := fake.NewFakeClient()
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	pc := NewProvisioningClient(c)
 
 	err := pc.UpdateBMHProvisioning(context.Background(), "", "host", "http://iso-url")
@@ -42,7 +56,8 @@ func TestUpdateBMHProvisioningEmptyNamespace(t *testing.T) {
 }
 
 func TestUpdateBMHProvisioningEmptyName(t *testing.T) {
-	c := fake.NewFakeClient()
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	pc := NewProvisioningClient(c)
 
 	err := pc.UpdateBMHProvisioning(context.Background(), "default", "", "http://iso-url")
@@ -52,7 +67,8 @@ func TestUpdateBMHProvisioningEmptyName(t *testing.T) {
 }
 
 func TestUpdateBMHProvisioningEmptyURL(t *testing.T) {
-	c := fake.NewFakeClient()
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	pc := NewProvisioningClient(c)
 
 	err := pc.UpdateBMHProvisioning(context.Background(), "default", "host1", "")
@@ -62,17 +78,45 @@ func TestUpdateBMHProvisioningEmptyURL(t *testing.T) {
 }
 
 func TestUpdateBMHProvisioningValid(t *testing.T) {
-	c := fake.NewFakeClient()
+	// Create a test BareMetalHost object
+	bmh := &bmov1alpha1.BareMetalHost{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-host",
+			Namespace: "default",
+		},
+		Spec: bmov1alpha1.BareMetalHostSpec{
+			BMC: bmov1alpha1.BMCDetails{
+				Address: "redfish://bmc.example.com",
+			},
+		},
+	}
+
+	// Create a fake client with the BMH object and the correct scheme
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bmh).Build()
 	pc := NewProvisioningClient(c)
 
-	err := pc.UpdateBMHProvisioning(context.Background(), "default", "host1", "http://iso-url")
+	// Test update
+	err := pc.UpdateBMHProvisioning(context.Background(), "default", "test-host", "http://iso-url")
 	if err != nil {
 		t.Errorf("UpdateBMHProvisioning returned error: %v", err)
+	}
+
+	// Verify the update
+	updated := &bmov1alpha1.BareMetalHost{}
+	err = c.Get(context.Background(), client.ObjectKey{Name: "test-host", Namespace: "default"}, updated)
+	if err != nil {
+		t.Errorf("Failed to get updated BMH: %v", err)
+	}
+
+	if updated.Spec.Image == nil || updated.Spec.Image.URL != "http://iso-url" {
+		t.Errorf("BMH image URL not updated correctly: got %v", updated.Spec.Image)
 	}
 }
 
 func TestGetBMHStatusEmptyNamespace(t *testing.T) {
-	c := fake.NewFakeClient()
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	pc := NewProvisioningClient(c)
 
 	_, err := pc.GetBMHStatus(context.Background(), "", "host")
@@ -82,7 +126,8 @@ func TestGetBMHStatusEmptyNamespace(t *testing.T) {
 }
 
 func TestGetBMHStatusEmptyName(t *testing.T) {
-	c := fake.NewFakeClient()
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	pc := NewProvisioningClient(c)
 
 	_, err := pc.GetBMHStatus(context.Background(), "default", "")
@@ -92,14 +137,35 @@ func TestGetBMHStatusEmptyName(t *testing.T) {
 }
 
 func TestGetBMHStatusValid(t *testing.T) {
-	c := fake.NewFakeClient()
+	// Create a test BareMetalHost object with status
+	bmh := &bmov1alpha1.BareMetalHost{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-host",
+			Namespace: "default",
+		},
+		Spec: bmov1alpha1.BareMetalHostSpec{
+			BMC: bmov1alpha1.BMCDetails{
+				Address: "redfish://bmc.example.com",
+			},
+		},
+		Status: bmov1alpha1.BareMetalHostStatus{
+			Provisioning: bmov1alpha1.ProvisionStatus{
+				State: "provisioning",
+			},
+		},
+	}
+
+	// Create a fake client with the BMH object and the correct scheme
+	scheme := createSchemeWithBMH()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bmh).Build()
 	pc := NewProvisioningClient(c)
 
-	status, err := pc.GetBMHStatus(context.Background(), "default", "host1")
+	status, err := pc.GetBMHStatus(context.Background(), "default", "test-host")
 	if err != nil {
 		t.Errorf("GetBMHStatus returned error: %v", err)
 	}
-	if status == "" {
-		t.Errorf("GetBMHStatus returned empty status")
+
+	if status != "provisioning" {
+		t.Errorf("GetBMHStatus returned wrong status: got %s, expected provisioning", status)
 	}
 }
