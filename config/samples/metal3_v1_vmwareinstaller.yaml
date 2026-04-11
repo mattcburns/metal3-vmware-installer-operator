@@ -1,0 +1,48 @@
+apiVersion: metal3.io/v1
+kind: VmwareInstaller
+metadata:
+  name: example-installer
+  namespace: default
+  labels:
+    app.kubernetes.io/name: vmware-operator
+spec:
+  # Kickstart configuration to inject into the ISO
+  ksConfig: |
+    # Sample kickstart configuration for RHEL/CentOS live-ISO provisioning
+    install
+    cdrom
+    lang en_US.UTF-8
+    keyboard us
+    zerombr
+    clearpart --all --initlabel
+    autopart
+    bootloader --location=mbr
+    %packages
+    @core
+    %end
+    %post
+    # Custom provisioning logic here
+    echo "Provisioning complete" > /root/provision.log
+    %end
+
+  # OCI registry containing the VMware ISO image
+  isoRegistry:
+    # Image reference in the registry (must be an OCI-compliant image)
+    image: "registry.example.com/vmware-iso:9.0-latest"
+
+    # Optional: Reference to a Secret containing registry credentials
+    # The Secret should contain .dockercfg or .docker/config.json
+    # authSecret:
+    #   name: registry-pull-secret
+
+  # Reference to the Bare Metal Host that will be provisioned
+  targetHost:
+    # Bare Metal Host object name
+    name: "worker-node-01"
+    # Namespace containing the BMH (defaults to VmwareInstaller namespace)
+    namespace: "openstack"
+
+  # Optional: Custom registry path for the output provisioned ISO
+  # If not specified, defaults to: {input-image}-provisioned
+  # This is useful if you want full control over the output tag location
+  # outputImageTag: "registry.example.com/vmware-iso:9.0-provisioned-custom"
