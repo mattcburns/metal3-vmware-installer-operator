@@ -46,20 +46,20 @@ The VmwareProvisioner progresses through the following phases:
 Generate code and compile:
 
 ```bash
-go run build.go generate
-go run build.go build
+make generate
+make build
 ```
 
 Generate CRD manifests:
 
 ```bash
-go run build.go manifests
+make manifests
 ```
 
 Run tests:
 
 ```bash
-go run build.go test
+make test
 ```
 
 ### Deployment
@@ -67,7 +67,7 @@ go run build.go test
 1. **Generate and apply CRD**:
 
 ```bash
-go run build.go manifests
+make manifests
 kubectl apply -f config/crd/bases/
 ```
 
@@ -186,16 +186,16 @@ spec:
 
 ### Unit Tests
 
-Run unit tests for all packages:
+Run all tests with code generation and linting:
 
 ```bash
-go test ./pkg/... -v
+make test
 ```
 
-Run controller tests with envtest:
+Or run tests directly:
 
 ```bash
-go test ./internal/controller -v
+go test ./... -v
 ```
 
 ### Example Test Output
@@ -273,7 +273,7 @@ Registry credentials can be provided via:
 │   ├── manager/                     # Controller deployment
 │   ├── rbac/                        # RBAC roles and bindings
 │   └── samples/                     # Example CR manifests
-├── build.go                          # Build orchestration (replaces Makefile)
+├── Makefile                          # Build automation targets
 ├── go.mod                            # Go module definition
 └── README.md                         # This file
 ```
@@ -283,25 +283,31 @@ Registry credentials can be provided via:
 To add new features:
 
 1. Update CRD types in `api/v1/vmwareprovisioner_types.go`
-2. Regenerate code: `go run build.go generate`
+2. Regenerate code: `make generate`
 3. Implement logic in controller and/or utility packages
 4. Add tests in corresponding `*_test.go` files
-5. Generate manifests: `go run build.go manifests`
+5. Generate manifests: `make manifests`
 
 ### Build System
 
-The project uses `build.go` for build automation:
+The project uses Kubebuilder's Makefile for build automation:
 
 ```bash
-go run build.go <command>
-
-# Available commands:
-# generate       - Generate code from markers
-# manifests      - Generate CRD and RBAC manifests
-# build          - Build the controller binary
-# docker-build   - Build Docker image
-# test           - Run all tests
-# clean          - Clean build artifacts
+make help                 # Display all available targets
+make manifests            # Generate CRD and RBAC manifests
+make generate             # Generate code from markers
+make build                # Build the controller binary
+make run                  # Run controller locally
+make docker-build         # Build Docker image (runs tests first)
+make docker-push          # Push Docker image to registry
+make test                 # Run all tests with coverage
+make lint                 # Run golangci-lint
+make lint-fix             # Auto-fix linting issues
+make deploy               # Deploy controller to cluster
+make undeploy             # Remove controller from cluster
+make install              # Install CRDs to cluster
+make uninstall            # Remove CRDs from cluster
+make clean                # Clean build artifacts
 ```
 
 ## Known Limitations
@@ -331,7 +337,7 @@ To contribute:
 1. Fork the repository
 2. Create a feature branch
 3. Implement changes with tests
-4. Run tests: `go run build.go test`
+4. Run tests and linting: `make test && make lint-fix`
 5. Submit a pull request
 
 ## License

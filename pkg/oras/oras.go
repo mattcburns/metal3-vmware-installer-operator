@@ -17,7 +17,9 @@ limitations under the License.
 package oras
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -45,8 +47,7 @@ func NewClient(authSecret *corev1.Secret) *Client {
 }
 
 // FetchISO fetches an ISO image from an OCI registry and returns the blob data and digest
-// This is a placeholder implementation. In production, this would use ORAS library
-// to properly handle OCI image push/pull with correct manifests.
+// Phase 1 MVP: Returns mock data for testing. Production implementation would use ORAS v2 library.
 func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string, error) {
 	if imageRef == "" {
 		return nil, "", fmt.Errorf("imageRef is empty")
@@ -55,28 +56,25 @@ func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string,
 	// Extract credentials if available
 	cred, err := c.extractCredentials()
 	if err != nil {
-		// Log warning but don't fail - may be using cluster pull secrets
-		fmt.Printf("Warning: could not extract credentials: %v\n", err)
+		fmt.Printf("Note: No credentials found in secret\n")
 	}
-	_ = cred // Use credential in production implementation
 
-	// Placeholder implementation: return a mock ISO blob and digest
-	// In production, this would:
-	// 1. Authenticate to the registry using the credentials
-	// 2. Fetch the image manifest
-	// 3. Download the blob layers
-	// 4. Combine into the ISO data
-	// 5. Calculate and return the digest
+	fmt.Printf("Fetching VMware ISO: %s\n", imageRef)
+	if cred != nil {
+		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
+	}
 
-	mockISO := []byte("mock-iso-placeholder-content")
-	mockDigest := "sha256:abc123def456" // Placeholder digest
+	// Phase 1 MVP: Return mock ISO blob and digest
+	// This allows testing the workflow without real registry connectivity
+	mockISO := []byte("mock-esxi-iso-content-for-testing")
+	mockDigest := sha256.Sum256(mockISO)
+	digestStr := fmt.Sprintf("sha256:%x", mockDigest)
 
-	fmt.Printf("Placeholder: Fetching ISO %s (credentials: %v)\n", imageRef, cred != nil)
-	return mockISO, mockDigest, nil
+	return mockISO, digestStr, nil
 }
 
 // PushISO pushes a modified ISO image to an OCI registry and returns the digest
-// This is a placeholder implementation. In production, this would use ORAS library.
+// Phase 1 MVP: Returns mock data for testing. Production implementation would use ORAS v2 library.
 func (c *Client) PushISO(ctx context.Context, isoData []byte, imageRef string) (string, error) {
 	if len(isoData) == 0 {
 		return "", fmt.Errorf("isoData is empty")
@@ -88,32 +86,20 @@ func (c *Client) PushISO(ctx context.Context, isoData []byte, imageRef string) (
 	// Extract credentials if available
 	cred, err := c.extractCredentials()
 	if err != nil {
-		fmt.Printf("Warning: could not extract credentials: %v\n", err)
+		fmt.Printf("Note: No credentials found in secret\n")
 	}
-	_ = cred
 
-	// Placeholder implementation: return a mock digest
-	// In production, this would:
-	// 1. Create an OCI image config and manifest
-	// 2. Upload layers to the registry
-	// 3. Upload the manifest
-	// 4. Return the digest of the uploaded image
-
-	// Simple digest calculation for demonstration
-	digestHex := "0000000000000000000000000000000000000000"       // 40 hex chars for sha256 prefix
-	mockDigest := "sha256:" + digestHex[:min(16, len(digestHex))] // Truncated placeholder
-
-	fmt.Printf("Placeholder: Pushing ISO to %s (size: %d bytes, credentials: %v)\n",
-		imageRef, len(isoData), cred != nil)
-	return mockDigest, nil
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
+	fmt.Printf("Pushing modified VMware ISO: %s (size: %d bytes)\n", imageRef, len(isoData))
+	if cred != nil {
+		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
 	}
-	return b
+
+	// Phase 1 MVP: Return digest of the pushed blob
+	// This allows testing the workflow without real registry connectivity
+	digest := sha256.Sum256(isoData)
+	digestStr := fmt.Sprintf("sha256:%x", digest)
+
+	return digestStr, nil
 }
 
 // extractCredentials extracts Docker credentials from a Kubernetes Secret
@@ -159,22 +145,19 @@ func (c *Client) parseDockerCfg(data []byte) (*Credential, error) {
 				// Decode base64
 				decoded, err := base64.StdEncoding.DecodeString(auth)
 				if err != nil {
-					return nil, fmt.Errorf("failed to decode auth: %w", err)
+					continue
 				}
 
-				// Parse username:password
-				parts := string(decoded)
-				for i, c := range parts {
-					if c == ':' {
-						return &Credential{
-							Username: parts[:i],
-							Password: parts[i+1:],
-						}, nil
-					}
+				// Split username:password
+				parts := bytes.Split(decoded, []byte(":"))
+				if len(parts) == 2 {
+					return &Credential{
+						Username: string(parts[0]),
+						Password: string(parts[1]),
+					}, nil
 				}
 			}
 		}
-		break
 	}
 
 	return nil, fmt.Errorf("no auth entry found in .dockercfg")
@@ -182,40 +165,37 @@ func (c *Client) parseDockerCfg(data []byte) (*Credential, error) {
 
 // parseDockerConfigJson parses the new .docker/config.json format
 func (c *Client) parseDockerConfigJson(data []byte) (*Credential, error) {
-	var config map[string]interface{}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse docker config: %w", err)
+	var config struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
 	}
 
-	auths, ok := config["auths"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("no auths section in docker config")
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse docker config.json: %w", err)
 	}
 
 	// Get the first entry
-	for _, entry := range auths {
-		if authEntry, ok := entry.(map[string]interface{}); ok {
-			if auth, ok := authEntry["auth"].(string); ok {
-				// Decode base64
-				decoded, err := base64.StdEncoding.DecodeString(auth)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode auth: %w", err)
-				}
-
-				// Parse username:password
-				parts := string(decoded)
-				for i, c := range parts {
-					if c == ':' {
-						return &Credential{
-							Username: parts[:i],
-							Password: parts[i+1:],
-						}, nil
-					}
-				}
-			}
+	for _, entry := range config.Auths {
+		if entry.Auth == "" {
+			continue
 		}
-		break
+
+		// Decode base64
+		decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+		if err != nil {
+			continue
+		}
+
+		// Split username:password
+		parts := bytes.Split(decoded, []byte(":"))
+		if len(parts) == 2 {
+			return &Credential{
+				Username: string(parts[0]),
+				Password: string(parts[1]),
+			}, nil
+		}
 	}
 
-	return nil, fmt.Errorf("no auth entry found in docker config")
+	return nil, fmt.Errorf("no auth entries found in docker config.json")
 }
