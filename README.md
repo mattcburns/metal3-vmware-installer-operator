@@ -22,7 +22,7 @@ The VMware Provisioner Operator provides a one-shot workflow for provisioning ba
 
 ### Workflow Phases
 
-The VmwareProvisioner progresses through the following phases:
+The VmwareInstaller progresses through the following phases:
 
 - **Pending**: Initial state
 - **Fetching**: Downloading ISO from registry
@@ -88,17 +88,17 @@ kubectl create secret docker-registry registry-credentials \
   -n default
 ```
 
-4. **Apply a VmwareProvisioner CR**:
+4. **Apply a VmwareInstaller CR**:
 
 ```bash
-kubectl apply -f config/samples/vmware_v1_vmwareprovisioner.yaml
+kubectl apply -f config/samples/metal3_v1_vmwareinstaller.yaml
 ```
 
 5. **Monitor provisioning progress**:
 
 ```bash
-kubectl get vmwareprovisioners -w
-kubectl describe vmwareprovisioner example-provisioner
+kubectl get vmwareinstallers -w
+kubectl describe vmwareinstaller example-installer
 kubectl logs -f -l app=vmware-operator -n vmware-operator-system
 ```
 
@@ -107,10 +107,10 @@ kubectl logs -f -l app=vmware-operator -n vmware-operator-system
 ### Simple Provisioning
 
 ```yaml
-apiVersion: vmware.vmware.io/v1
-kind: VmwareProvisioner
+apiVersion: metal3.io/v1
+kind: VmwareInstaller
 metadata:
-  name: provision-worker-01
+  name: example-installer
   namespace: default
 spec:
   ksConfig: |
@@ -139,10 +139,10 @@ spec:
 ### With Custom Output Image
 
 ```yaml
-apiVersion: vmware.vmware.io/v1
-kind: VmwareProvisioner
+apiVersion: metal3.io/v1
+kind: VmwareInstaller
 metadata:
-  name: provision-custom-worker
+  name: example-installer-custom
   namespace: default
 spec:
   ksConfig: |
@@ -163,7 +163,7 @@ spec:
 
 ## API Reference
 
-### VmwareProvisioner Spec
+### VmwareInstaller Spec
 
 - **ksConfig** (string, required): Kickstart configuration content (plain text or base64-encoded)
 - **isoRegistry** (ISORegistryRef, required): OCI registry reference for the ISO image
@@ -175,7 +175,7 @@ spec:
 - **image** (string, required): OCI image reference (e.g., `registry.example.com/iso:latest`)
 - **authSecret** (LocalObjectReference, optional): Secret containing registry credentials
 
-### VmwareProvisioner Status
+### VmwareInstaller Status
 
 - **phase** (Phase): Current provisioning phase (Pending, Fetching, Processing, Uploading, Provisioning, Complete, Failed)
 - **message** (string): Human-readable status message
@@ -226,10 +226,10 @@ The BMH handles the actual interaction with Ironic (Metal3's provisioning engine
 
 ### One-Shot Model
 
-VmwareProvisioner uses a one-shot execution model:
+VmwareInstaller uses a one-shot execution model:
 - Each CR triggers provisioning once
 - Upon reaching Complete or Failed phase, reconciliation stops
-- To re-provision, create a new VmwareProvisioner CR
+- To re-provision, create a new VmwareInstaller CR
 
 This prevents accidental re-provisioning and keeps the resource immutable once processing starts.
 
@@ -252,12 +252,12 @@ Registry credentials can be provided via:
 .
 ├── api/
 │   └── v1/                          # CRD type definitions
-│       ├── vmwareprovisioner_types.go
+│       ├── vmwareinstaller_types.go
 │       └── groupversion_info.go
 ├── internal/
 │   └── controller/                  # Controller reconciliation logic
-│       ├── vmwareprovisioner_controller.go
-│       └── vmwareprovisioner_controller_test.go
+│       ├── vmwareinstaller_controller.go
+│       └── vmwareinstaller_controller_test.go
 ├── pkg/
 │   ├── oras/                        # OCI registry operations
 │   │   ├── oras.go
@@ -282,7 +282,7 @@ Registry credentials can be provided via:
 
 To add new features:
 
-1. Update CRD types in `api/v1/vmwareprovisioner_types.go`
+1. Update CRD types in `api/v1/vmwareinstaller_types.go`
 2. Regenerate code: `make generate`
 3. Implement logic in controller and/or utility packages
 4. Add tests in corresponding `*_test.go` files
