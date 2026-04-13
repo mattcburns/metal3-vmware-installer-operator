@@ -22,14 +22,14 @@ import (
 )
 
 func TestNewClient(t *testing.T) {
-	client := NewClient(nil)
+	client := NewMockClient()
 	if client == nil {
-		t.Errorf("NewClient returned nil")
+		t.Errorf("NewMockClient returned nil")
 	}
 }
 
 func TestFetchISOEmpty(t *testing.T) {
-	client := NewClient(nil)
+	client := NewMockClient()
 	_, _, err := client.FetchISO(context.Background(), "")
 	if err == nil {
 		t.Errorf("FetchISO should return error for empty imageRef")
@@ -37,7 +37,7 @@ func TestFetchISOEmpty(t *testing.T) {
 }
 
 func TestFetchISOValid(t *testing.T) {
-	client := NewClient(nil)
+	client := NewMockClient()
 	data, digest, err := client.FetchISO(context.Background(), "registry.example.com/iso:latest")
 	if err != nil {
 		t.Errorf("FetchISO returned error: %v", err)
@@ -51,7 +51,7 @@ func TestFetchISOValid(t *testing.T) {
 }
 
 func TestPushISO(t *testing.T) {
-	client := NewClient(nil)
+	client := NewMockClient()
 	testData := []byte("test-iso-data")
 	digest, err := client.PushISO(context.Background(), testData, "registry.example.com/iso:latest")
 	if err != nil {
@@ -63,7 +63,7 @@ func TestPushISO(t *testing.T) {
 }
 
 func TestPushISOEmpty(t *testing.T) {
-	client := NewClient(nil)
+	client := NewMockClient()
 	_, err := client.PushISO(context.Background(), []byte{}, "")
 	if err == nil {
 		t.Errorf("PushISO should return error for empty imageRef")

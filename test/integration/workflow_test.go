@@ -30,8 +30,8 @@ import (
 func TestFullWorkflowIntegration(t *testing.T) {
 	ctx := context.Background()
 
-	// Step 1: Create ORAS client (mock mode for testing)
-	orasClient := oras.NewClient(nil)
+	// Step 1: Create ORAS client in mock mode (for testing without a real registry)
+	orasClient := oras.NewMockClient()
 
 	// Step 2: Fetch ISO from "registry"
 	isoBlob, inputDigest, err := orasClient.FetchISO(ctx, "registry.example.com/vmware/esxi:8.0")
@@ -98,7 +98,7 @@ rootpw mypassword123
 // TestORASSizeGrowth validates that ORAS preserves blob size correctly
 func TestORASSizeGrowth(t *testing.T) {
 	ctx := context.Background()
-	client := oras.NewClient(nil)
+	client := oras.NewMockClient()
 
 	// Fetch initial ISO
 	iso1, digest1, _ := client.FetchISO(ctx, "registry.example.com/vmware/esxi:8.0")

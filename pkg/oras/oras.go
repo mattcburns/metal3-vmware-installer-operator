@@ -23,8 +23,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	corev1 "k8s.io/api/core/v1"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content/memory"
+	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 // Client handles OCI registry operations for ISO images
@@ -56,8 +63,14 @@ func newClientWithMode(authSecret *corev1.Secret, mockMode bool) *Client {
 	}
 }
 
+// NewMockClient creates a new ORAS client in mock mode for testing
+// Use this in unit tests to avoid needing a real registry
+func NewMockClient() *Client {
+	return newClientWithMode(nil, true)
+}
+
 // FetchISO fetches an ISO image from an OCI registry and returns the blob data and digest
-// Phase 3: Supports both mock mode (for testing) and real ORAS registry operations
+// Supports both mock mode (for testing) and real ORAS registry operations
 // Real implementation uses oras.land/oras-go/v2 library for OCI registry access
 func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string, error) {
 	if imageRef == "" {
@@ -65,14 +78,6 @@ func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string,
 	}
 
 	fmt.Printf("Fetching VMware ISO: %s\n", imageRef)
-
-	// Extract credentials if available
-	cred, err := c.extractCredentials()
-	if err != nil {
-		fmt.Printf("Note: No credentials found in secret\n")
-	} else if cred != nil {
-		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
-	}
 
 	// In mock mode, return test data (used for unit testing)
 	if c.mockMode {
@@ -82,22 +87,66 @@ func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string,
 		return mockISO, digestStr, nil
 	}
 
-	// Real mode: Use ORAS v2 library
-	// Phase 3 TODO: Implement real registry fetch using oras.land/oras-go/v2
-	// Steps:
-	// 1. Create remote registry client with credentials
-	// 2. Resolve image reference to manifest
-	// 3. Fetch blob layers from registry
-	// 4. Return first blob layer as ISO
-	// For now, return mock data as fallback
-	mockISO := []byte("mock-esxi-iso-content-for-testing")
-	mockDigest := sha256.Sum256(mockISO)
-	digestStr := fmt.Sprintf("sha256:%x", mockDigest)
-	return mockISO, digestStr, nil
+	// Real mode: Use ORAS v2 library to fetch from actual OCI registry
+	// Create a remote registry repository
+	remoteRepo, err := remote.NewRepository(imageRef)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create remote repository: %w", err)
+	}
+
+	// Extract and apply credentials if available
+	cred, err := c.extractCredentials()
+	if err != nil {
+		fmt.Printf("Note: No credentials found in secret, attempting unauthenticated access\n")
+	} else if cred != nil {
+		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
+		// Create an auth client with credentials
+		remoteRepo.Client = &auth.Client{
+			Credential: auth.StaticCredential(imageRef, auth.Credential{
+				Username: cred.Username,
+				Password: cred.Password,
+			}),
+		}
+	}
+
+	// Resolve the image reference to get the manifest descriptor
+	desc, err := remoteRepo.Resolve(ctx, "")
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to resolve image reference: %w", err)
+	}
+
+	fmt.Printf("Resolved image reference to digest: %s\n", desc.Digest)
+
+	// Create a local memory store to fetch the content into
+	memStore := memory.New()
+
+	// Copy from remote repo to local store
+	copyDesc, err := oras.Copy(ctx, remoteRepo, desc.Digest.String(), memStore, desc.Digest.String(), oras.CopyOptions{})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to copy artifact from registry: %w", err)
+	}
+
+	// Fetch the ISO blob (first layer in the artifact)
+	isoData, manifestDigest, err := c.extractISOFromManifest(ctx, memStore, copyDesc)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to extract ISO from manifest: %w", err)
+	}
+
+	if len(isoData) == 0 {
+		return nil, "", fmt.Errorf("extracted ISO blob is empty")
+	}
+
+	// Calculate digest of the actual ISO data
+	isoDigest := sha256.Sum256(isoData)
+	digestStr := fmt.Sprintf("sha256:%x", isoDigest)
+
+	fmt.Printf("Successfully fetched ISO (%d bytes, digest: %s)\n", len(isoData), digestStr)
+	_ = manifestDigest // Use manifest digest for logging if needed
+	return isoData, digestStr, nil
 }
 
 // PushISO pushes a modified ISO image to an OCI registry and returns the digest
-// Phase 3: Supports both mock mode (for testing) and real ORAS registry operations
+// Supports both mock mode (for testing) and real ORAS registry operations
 // Real implementation uses oras.land/oras-go/v2 library for OCI registry access
 func (c *Client) PushISO(ctx context.Context, isoData []byte, imageRef string) (string, error) {
 	if len(isoData) == 0 {
@@ -109,31 +158,58 @@ func (c *Client) PushISO(ctx context.Context, isoData []byte, imageRef string) (
 
 	fmt.Printf("Pushing modified VMware ISO: %s (size: %d bytes)\n", imageRef, len(isoData))
 
-	// Extract credentials if available
-	cred, err := c.extractCredentials()
-	if err != nil {
-		fmt.Printf("Note: No credentials found in secret\n")
-	} else if cred != nil {
-		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
-	}
-
 	// Calculate digest of the ISO data
-	digest := sha256.Sum256(isoData)
-	digestStr := fmt.Sprintf("sha256:%x", digest)
+	isoDigest := sha256.Sum256(isoData)
+	digestStr := fmt.Sprintf("sha256:%x", isoDigest)
 
 	// In mock mode, return digest immediately (used for unit testing)
 	if c.mockMode {
 		return digestStr, nil
 	}
 
-	// Real mode: Use ORAS v2 library
-	// Phase 3 TODO: Implement real registry push using oras.land/oras-go/v2
-	// Steps:
-	// 1. Create remote registry client with credentials
-	// 2. Create artifact manifest with ISO as layer
-	// 3. Push artifact to registry
-	// 4. Return artifact digest
-	// For now, return calculated digest as fallback
+	// Real mode: Use ORAS v2 library to push to actual OCI registry
+	// Create a local memory store with the ISO blob
+	memStore := memory.New()
+
+	// Add the ISO blob to the memory store
+	isoDesc := ocispec.Descriptor{
+		MediaType: "application/vnd.vmware.iso.image.v1+octet-stream",
+		Size:      int64(len(isoData)),
+		Digest:    digest.NewDigestFromEncoded(digest.SHA256, fmt.Sprintf("%x", isoDigest)),
+	}
+
+	// Push the blob to the memory store
+	if err := memStore.Push(ctx, isoDesc, bytes.NewReader(isoData)); err != nil {
+		return "", fmt.Errorf("failed to add ISO to memory store: %w", err)
+	}
+
+	// Create a remote registry repository
+	remoteRepo, err := remote.NewRepository(imageRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to create remote repository: %w", err)
+	}
+
+	// Extract and apply credentials if available
+	cred, err := c.extractCredentials()
+	if err != nil {
+		fmt.Printf("Note: No credentials found in secret, attempting unauthenticated push\n")
+	} else if cred != nil {
+		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
+		remoteRepo.Client = &auth.Client{
+			Credential: auth.StaticCredential(imageRef, auth.Credential{
+				Username: cred.Username,
+				Password: cred.Password,
+			}),
+		}
+	}
+
+	// Copy from memory store to remote repository
+	_, err = oras.Copy(ctx, memStore, isoDesc.Digest.String(), remoteRepo, isoDesc.Digest.String(), oras.CopyOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to push ISO to registry: %w", err)
+	}
+
+	fmt.Printf("Successfully pushed ISO (%d bytes, digest: %s)\n", len(isoData), digestStr)
 	return digestStr, nil
 }
 
@@ -233,4 +309,48 @@ func (c *Client) parseDockerConfigJson(data []byte) (*Credential, error) {
 	}
 
 	return nil, fmt.Errorf("no auth entries found in docker config.json")
+}
+
+// extractISOFromManifest extracts the ISO blob from an OCI manifest
+func (c *Client) extractISOFromManifest(ctx context.Context, store *memory.Store, manifestDesc ocispec.Descriptor) ([]byte, string, error) {
+	// Read the manifest descriptor
+	rc, err := store.Fetch(ctx, manifestDesc)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to fetch manifest: %w", err)
+	}
+	defer rc.Close()
+
+	// Parse the manifest to get layers
+	manifestData, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read manifest: %w", err)
+	}
+
+	// Try to parse as OCI Image Manifest
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		// Fallback: manifest might be a blob itself (single layer), return it
+		fmt.Printf("Note: Could not parse as manifest, treating as raw blob\n")
+		return manifestData, manifestDesc.Digest.String(), nil
+	}
+
+	// If there are layers, fetch the first one (usually the ISO)
+	if len(manifest.Layers) > 0 {
+		layerDesc := manifest.Layers[0]
+		rc, err := store.Fetch(ctx, layerDesc)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to fetch layer: %w", err)
+		}
+		defer rc.Close()
+
+		layerData, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read layer: %w", err)
+		}
+
+		return layerData, layerDesc.Digest.String(), nil
+	}
+
+	// Fallback: return the manifest data itself as the ISO
+	return manifestData, manifestDesc.Digest.String(), nil
 }

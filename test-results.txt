@@ -1,0 +1,79 @@
+?   	github.com/vmware-operator/api/v1	[no test files]
+?   	github.com/vmware-operator/cmd	[no test files]
+=== RUN   TestControllers
+Running Suite: Controller Suite - /home/mburns/source/vmware-operator/internal/controller
+=========================================================================================
+Random Seed: [1m1776114820[0m
+
+Will run [1m4[0m of [1m4[0m specs
+Fetching VMware ISO: registry.example.com/iso:latest
+Note: No credentials found in secret, attempting unauthenticated access
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m
+
+[38;5;10m[1mRan 4 of 4 Specs in 6.469 seconds[0m
+[38;5;10m[1mSUCCESS![0m -- [38;5;10m[1m4 Passed[0m | [38;5;9m[1m0 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m0 Skipped[0m
+--- PASS: TestControllers (6.47s)
+PASS
+ok  	github.com/vmware-operator/internal/controller	6.487s
+=== RUN   TestNewProvisioningClient
+--- PASS: TestNewProvisioningClient (0.07s)
+=== RUN   TestUpdateBMHProvisioningEmptyNamespace
+--- PASS: TestUpdateBMHProvisioningEmptyNamespace (0.00s)
+=== RUN   TestUpdateBMHProvisioningEmptyName
+--- PASS: TestUpdateBMHProvisioningEmptyName (0.00s)
+=== RUN   TestUpdateBMHProvisioningEmptyURL
+--- PASS: TestUpdateBMHProvisioningEmptyURL (0.00s)
+=== RUN   TestUpdateBMHProvisioningValid
+Successfully updated BMH default/test-host with ISO: http://iso-url (diskFormat: live-iso)
+--- PASS: TestUpdateBMHProvisioningValid (0.00s)
+=== RUN   TestGetBMHStatusEmptyNamespace
+--- PASS: TestGetBMHStatusEmptyNamespace (0.00s)
+=== RUN   TestGetBMHStatusEmptyName
+--- PASS: TestGetBMHStatusEmptyName (0.00s)
+=== RUN   TestGetBMHStatusValid
+--- PASS: TestGetBMHStatusValid (0.00s)
+PASS
+ok  	github.com/vmware-operator/pkg/bmh	(cached)
+=== RUN   TestInjectKsConfig
+--- PASS: TestInjectKsConfig (0.00s)
+=== RUN   TestInjectKsConfigEmptyISO
+--- PASS: TestInjectKsConfigEmptyISO (0.00s)
+=== RUN   TestInjectKsConfigEmptyConfig
+--- PASS: TestInjectKsConfigEmptyConfig (0.00s)
+PASS
+ok  	github.com/vmware-operator/pkg/iso	(cached)
+=== RUN   TestNewClient
+--- PASS: TestNewClient (0.00s)
+=== RUN   TestFetchISOEmpty
+--- PASS: TestFetchISOEmpty (0.00s)
+=== RUN   TestFetchISOValid
+Fetching VMware ISO: registry.example.com/iso:latest
+--- PASS: TestFetchISOValid (0.00s)
+=== RUN   TestPushISO
+Pushing modified VMware ISO: registry.example.com/iso:latest (size: 13 bytes)
+--- PASS: TestPushISO (0.00s)
+=== RUN   TestPushISOEmpty
+--- PASS: TestPushISOEmpty (0.00s)
+PASS
+ok  	github.com/vmware-operator/pkg/oras	(cached)
+=== RUN   TestFullWorkflowIntegration
+Fetching VMware ISO: registry.example.com/vmware/esxi:8.0
+    workflow_test.go:50: Step 1 - Fetch ISO: OK (size: 33 bytes, digest: sha256:13a319b9f02b4d1653eea6009d3094769d4cdda36605e7f4b275c1ceadd96b2d)
+    workflow_test.go:73: Step 2 - Inject ks.cfg: OK (original: 33 bytes, modified: 142 bytes)
+Pushing modified VMware ISO: registry.example.com/vmware/esxi:8.0-provisioned (size: 142 bytes)
+    workflow_test.go:86: Step 3 - Push modified ISO: OK (digest: sha256:8a9299378fb6f2036ec358c119995e402c3ee0ff4d8277c305b11e85271b6fce)
+    workflow_test.go:93: Workflow Integration Test: PASSED
+    workflow_test.go:94:   - Input digest:  sha256:13a319b9f02b4d1653eea6009d3094769d4cdda36605e7f4b275c1ceadd96b2d
+    workflow_test.go:95:   - Output digest: sha256:8a9299378fb6f2036ec358c119995e402c3ee0ff4d8277c305b11e85271b6fce
+--- PASS: TestFullWorkflowIntegration (0.00s)
+=== RUN   TestORASSizeGrowth
+Fetching VMware ISO: registry.example.com/vmware/esxi:8.0
+Fetching VMware ISO: registry.example.com/vmware/esxi:8.0
+    workflow_test.go:116: ORAS Size Growth: CONSISTENT (size: 33 bytes, digest: sha256:13a319b9f02b4d1653eea6009d3094769d4cdda36605e7f4b275c1ceadd96b2d)
+--- PASS: TestORASSizeGrowth (0.00s)
+=== RUN   TestISOInjectionSize
+    workflow_test.go:132: ISO Injection Size: CORRECT (original: 13, injected: 68, growth: 55 bytes)
+--- PASS: TestISOInjectionSize (0.00s)
+PASS
+ok  	github.com/vmware-operator/test/integration	(cached)
+?   	github.com/vmware-operator/test/utils	[no test files]
