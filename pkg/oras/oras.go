@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"io"
 
-	corev1 "k8s.io/api/core/v1"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	corev1 "k8s.io/api/core/v1"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content/memory"
 	"oras.land/oras-go/v2/registry/remote"

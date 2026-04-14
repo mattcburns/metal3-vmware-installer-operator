@@ -44,13 +44,13 @@ metadata:
 spec:
   # ISO image reference (will be fetched from real registry)
   isoImageRef: docker.io/myorg/esxi:8.0
-  
+
   # Kickstart configuration
   kickstartConfig: |
     vmaccepteula
     rootpw MySecurePassword123
     bootloader --location=mbr --boot-drive=sda
-    
+
   # BareMetalHost to provision
   baremetalHostRef:
     name: bmc-host-1

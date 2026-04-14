@@ -18,6 +18,10 @@ package iso
 
 import (
 	"fmt"
+	"os"
+
+	"github.com/diskfs/go-diskfs/backend/file"
+	"github.com/diskfs/go-diskfs/filesystem/iso9660"
 )
 
 // InjectKsConfig injects a VMware kickstart configuration file into an ISO image
@@ -47,20 +51,79 @@ func InjectKsConfig(isoBlob []byte, ksConfig string) ([]byte, error) {
 // This is the production implementation for real ESXi ISOs.
 // The ks.cfg file is created as a proper ISO 9660 file entry at the root of the filesystem,
 // allowing ESXi's boot process to find and read the kickstart configuration.
-//
-// TODO: Complete diskfs integration
-// Current diskfs v1.9.1 API needs further investigation for ISO 9660 file creation.
-// Reference: https://pkg.go.dev/github.com/diskfs/go-diskfs
-// The library supports reading ISO 9660, but programmatic file injection requires:
-// 1. Open ISO as iso9660.FileSystem
-// 2. Get root directory
-// 3. Create new file entry with proper ISO 9660 naming
-// 4. Write modified ISO to output buffer
 func injectKsConfigDiskfs(isoBlob []byte, ksConfig string) ([]byte, error) {
-	// Placeholder: Return error to trigger fallback
-	// Once diskfs integration is complete, this will properly inject ks.cfg
-	// into the ISO 9660 filesystem
-	return nil, fmt.Errorf("diskfs integration in progress, using append fallback")
+	// Create temporary file for the ISO
+	tmpFile, err := os.CreateTemp("", "vmware-iso-*.iso")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	// Write the ISO blob to temp file
+	if err := os.WriteFile(tmpPath, isoBlob, 0o644); err != nil {
+		return nil, fmt.Errorf("failed to write ISO to temp file: %w", err)
+	}
+
+	// Open the ISO file using diskfs file backend
+	// This returns a backend.Storage that diskfs can work with
+	backend, err := file.OpenFromPath(tmpPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open ISO file backend: %w", err)
+	}
+	defer backend.Close()
+
+	// Read the ISO 9660 filesystem from the backend
+	// ISO 9660 uses 2048-byte sectors with primary volume descriptor at sector 16
+	const (
+		sectorSize = int64(2048)
+		pvdOffset  = int64(16) * sectorSize
+	)
+
+	fs, err := iso9660.Read(backend, int64(len(isoBlob)), pvdOffset, sectorSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ISO 9660 filesystem: %w", err)
+	}
+
+	// Write ks.cfg content to the ISO filesystem
+	// ISO 9660 requires filenames to be UPPERCASE with version suffix
+	ksPath := "/KS.CFG;1"
+	ksData := []byte(ksConfig)
+
+	// Create and write the file to the ISO
+	// This creates a proper ISO 9660 file entry that can be read by ESXi
+	fsFile, err := fs.OpenFile(ksPath, int(os.O_CREATE|os.O_WRONLY))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ks.cfg in ISO: %w", err)
+	}
+
+	if _, err := fsFile.Write(ksData); err != nil {
+		fsFile.Close()
+		return nil, fmt.Errorf("failed to write ks.cfg content: %w", err)
+	}
+
+	if err := fsFile.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close ks.cfg file: %w", err)
+	}
+
+	// Finalize the ISO to write all changes back to the backend
+	// This recalculates all metadata, updates extent allocations, and writes everything
+	opts := iso9660.FinalizeOptions{}
+	if err := fs.Finalize(opts); err != nil {
+		return nil, fmt.Errorf("failed to finalize ISO: %w", err)
+	}
+
+	// Read the modified ISO from the temp file
+	modifiedISO, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read modified ISO: %w", err)
+	}
+
+	fmt.Printf("Successfully injected ks.cfg into ISO using diskfs (size: %d -> %d bytes)\n",
+		len(isoBlob), len(modifiedISO))
+
+	return modifiedISO, nil
 }
 
 // injectKsConfigAppend is a fallback that simply appends the config to the ISO blob
