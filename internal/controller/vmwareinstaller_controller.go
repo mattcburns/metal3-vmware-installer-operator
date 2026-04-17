@@ -19,11 +19,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -140,7 +143,14 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Determine output image tag
 	outputTag := installer.Spec.OutputImageTag
 	if outputTag == nil || *outputTag == "" {
-		derived := installer.Spec.IsoRegistry.Image + "-provisioned"
+		// Strip existing tag from source image to get bare registry/repository
+		baseImage := installer.Spec.IsoRegistry.Image
+		if i := strings.LastIndex(baseImage, ":"); i >= 0 {
+			baseImage = baseImage[:i]
+		}
+		hostName := installer.Spec.TargetHost.Name
+		timestamp := time.Now().UTC().Format("20060102-150405")
+		derived := baseImage + ":" + hostName + "-" + timestamp
 		outputTag = &derived
 	}
 
@@ -155,6 +165,14 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	log.Info("Successfully pushed modified ISO", "digest", outputDigest, "tag", *outputTag)
 
+	// Build a digest-pinned OCI reference for Ironic (tag alone is not specific enough)
+	// Strip tag from outputTag to get the bare repo, then append the manifest digest
+	baseRepo := *outputTag
+	if i := strings.LastIndex(baseRepo, ":"); i >= 0 {
+		baseRepo = baseRepo[:i]
+	}
+	digestRef := baseRepo + "@" + outputDigest
+
 	// Transition to Provisioning phase
 	log.Info("Updating Bare Metal Host for provisioning", "bmh", installer.Spec.TargetHost.Name)
 	r.updateInstallerStatus(ctx, installer, vmwarev1.PhaseProvisioning,
@@ -168,7 +186,7 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	err = bmhClient.UpdateBMHProvisioning(ctx, targetNamespace,
-		installer.Spec.TargetHost.Name, *outputTag)
+		installer.Spec.TargetHost.Name, digestRef)
 	if err != nil {
 		log.Error(err, "Failed to update BMH")
 		r.updateInstallerStatus(ctx, installer, vmwarev1.PhaseFailed,
@@ -189,13 +207,6 @@ func (r *VmwareInstallerReconciler) updateInstallerStatus(ctx context.Context, i
 	phase vmwarev1.Phase, message, digest string) {
 	log := logf.FromContext(ctx)
 
-	installer.Status.Phase = phase
-	installer.Status.Message = message
-	if digest != "" {
-		installer.Status.IsoDigest = digest
-	}
-
-	// Update conditions
 	conditionType := "Progressing"
 	conditionStatus := metav1.ConditionTrue
 	reason := "Progressing"
@@ -204,36 +215,43 @@ func (r *VmwareInstallerReconciler) updateInstallerStatus(ctx context.Context, i
 	case vmwarev1.PhaseComplete:
 		conditionType = "Ready"
 		reason = "Provisioned"
-		installer.Status.Message = message
 	case vmwarev1.PhaseFailed:
 		conditionType = "Failed"
 		reason = "Failed"
 		conditionStatus = metav1.ConditionTrue
 	}
 
-	condition := metav1.Condition{
-		Type:               conditionType,
-		Status:             conditionStatus,
-		ObservedGeneration: installer.Generation,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-
-	// Find and update existing condition or add new one
-	found := false
-	for i, c := range installer.Status.Conditions {
-		if c.Type == conditionType {
-			installer.Status.Conditions[i] = condition
-			found = true
-			break
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &vmwarev1.VmwareInstaller{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(installer), latest); err != nil {
+			return err
 		}
-	}
-	if !found {
-		installer.Status.Conditions = append(installer.Status.Conditions, condition)
-	}
-
-	if err := r.Status().Update(ctx, installer); err != nil {
+		latest.Status.Phase = phase
+		latest.Status.Message = message
+		if digest != "" {
+			latest.Status.IsoDigest = digest
+		}
+		condition := metav1.Condition{
+			Type:               conditionType,
+			Status:             conditionStatus,
+			ObservedGeneration: latest.Generation,
+			Reason:             reason,
+			Message:            message,
+			LastTransitionTime: metav1.Now(),
+		}
+		found := false
+		for i, c := range latest.Status.Conditions {
+			if c.Type == conditionType {
+				latest.Status.Conditions[i] = condition
+				found = true
+				break
+			}
+		}
+		if !found {
+			latest.Status.Conditions = append(latest.Status.Conditions, condition)
+		}
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		log.Error(err, "Failed to update installer status")
 	}
 }

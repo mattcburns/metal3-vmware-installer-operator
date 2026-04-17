@@ -2,7 +2,7 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/vmware.vmware.io_vmwareprovisioners.yaml
+- bases/metal3.io_vmwareinstallers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

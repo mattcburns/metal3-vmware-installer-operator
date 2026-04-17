@@ -72,8 +72,14 @@ func (pc *ProvisioningClient) UpdateBMHProvisioning(ctx context.Context, bmhName
 		bmh.Spec.Image = &bmov1alpha1.Image{}
 	}
 
+	// BMH webhook requires oci:// scheme for OCI registry references
+	ociURL := isoURL
+	if len(ociURL) < 6 || ociURL[:6] != "oci://" {
+		ociURL = "oci://" + ociURL
+	}
+
 	diskFormat := "live-iso"
-	bmh.Spec.Image.URL = isoURL
+	bmh.Spec.Image.URL = ociURL
 	bmh.Spec.Image.DiskFormat = &diskFormat
 
 	// Patch the BareMetalHost with the new image reference

@@ -35,6 +35,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	vmwarev1 "github.com/vmware-operator/api/v1"
 	"github.com/vmware-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -49,6 +50,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(vmwarev1.AddToScheme(scheme))
+	utilruntime.Must(bmov1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -73,6 +74,7 @@ func NewMockClient() *Client {
 // Supports both mock mode (for testing) and real ORAS registry operations
 // Real implementation uses oras.land/oras-go/v2 library for OCI registry access
 func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string, error) {
+	imageRef = strings.TrimSpace(imageRef)
 	if imageRef == "" {
 		return nil, "", fmt.Errorf("imageRef is empty")
 	}
@@ -100,17 +102,17 @@ func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string,
 		fmt.Printf("Note: No credentials found in secret, attempting unauthenticated access\n")
 	} else if cred != nil {
 		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
-		// Create an auth client with credentials
+		// Create an auth client with credentials — StaticCredential takes the registry hostname only
 		remoteRepo.Client = &auth.Client{
-			Credential: auth.StaticCredential(imageRef, auth.Credential{
+			Credential: auth.StaticCredential(remoteRepo.Reference.Registry, auth.Credential{
 				Username: cred.Username,
 				Password: cred.Password,
 			}),
 		}
 	}
 
-	// Resolve the image reference to get the manifest descriptor
-	desc, err := remoteRepo.Resolve(ctx, "")
+	// Resolve the image reference using the tag/reference parsed from the image ref
+	desc, err := remoteRepo.Resolve(ctx, remoteRepo.Reference.Reference)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve image reference: %w", err)
 	}
@@ -149,6 +151,7 @@ func (c *Client) FetchISO(ctx context.Context, imageRef string) ([]byte, string,
 // Supports both mock mode (for testing) and real ORAS registry operations
 // Real implementation uses oras.land/oras-go/v2 library for OCI registry access
 func (c *Client) PushISO(ctx context.Context, isoData []byte, imageRef string) (string, error) {
+	imageRef = strings.TrimSpace(imageRef)
 	if len(isoData) == 0 {
 		return "", fmt.Errorf("isoData is empty")
 	}
@@ -196,21 +199,35 @@ func (c *Client) PushISO(ctx context.Context, isoData []byte, imageRef string) (
 	} else if cred != nil {
 		fmt.Printf("Using registry credentials (username: %s)\n", cred.Username)
 		remoteRepo.Client = &auth.Client{
-			Credential: auth.StaticCredential(imageRef, auth.Credential{
+			Credential: auth.StaticCredential(remoteRepo.Reference.Registry, auth.Credential{
 				Username: cred.Username,
 				Password: cred.Password,
 			}),
 		}
 	}
 
-	// Copy from memory store to remote repository
-	_, err = oras.Copy(ctx, memStore, isoDesc.Digest.String(), remoteRepo, isoDesc.Digest.String(), oras.CopyOptions{})
+	// Tag the manifest in the memory store so Copy can resolve it by tag
+	tag := remoteRepo.Reference.Reference
+	manifestDesc, err := oras.PackManifest(ctx, memStore, oras.PackManifestVersion1_1, "application/vnd.vmware.iso.image.v1", oras.PackManifestOptions{
+		Layers: []ocispec.Descriptor{isoDesc},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to pack ISO into manifest: %w", err)
+	}
+	if err := memStore.Tag(ctx, manifestDesc, tag); err != nil {
+		return "", fmt.Errorf("failed to tag manifest in memory store: %w", err)
+	}
+
+	// Copy manifest (and its blobs) from memory store to remote
+	copiedDesc, err := oras.Copy(ctx, memStore, tag, remoteRepo, tag, oras.CopyOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to push ISO to registry: %w", err)
 	}
 
-	fmt.Printf("Successfully pushed ISO (%d bytes, digest: %s)\n", len(isoData), digestStr)
-	return digestStr, nil
+	// Return the manifest digest so callers can construct a digest-pinned reference
+	manifestDigest := copiedDesc.Digest.String()
+	fmt.Printf("Successfully pushed ISO (%d bytes, manifest digest: %s)\n", len(isoData), manifestDigest)
+	return manifestDigest, nil
 }
 
 // extractCredentials extracts Docker credentials from a Kubernetes Secret
@@ -227,6 +244,11 @@ func (c *Client) extractCredentials() (*Credential, error) {
 	// Try to extract from .docker/config.json (new format)
 	if dockerConfig, ok := c.authSecret.Data[".docker/config.json"]; ok {
 		return c.parseDockerConfigJson(dockerConfig)
+	}
+
+	// Support for kubernetes.io/dockerconfigjson (the default key)
+	if dockerConfigJson, ok := c.authSecret.Data[".dockerconfigjson"]; ok {
+		return c.parseDockerConfigJson(dockerConfigJson)
 	}
 
 	// Try direct username/password fields
