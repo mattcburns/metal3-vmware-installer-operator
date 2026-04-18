@@ -19,14 +19,15 @@ package iso
 import (
 	"fmt"
 	"os"
-
-	"github.com/diskfs/go-diskfs/backend/file"
-	"github.com/diskfs/go-diskfs/filesystem/iso9660"
+	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
-// InjectKsConfig injects a VMware kickstart configuration file into an ISO image
-// Uses diskfs to properly add ks.cfg to the ISO 9660 filesystem.
-// Falls back to append model for test ISOs that can't be parsed as 9660.
+// InjectKsConfig injects a VMware kickstart configuration file into an ISO image.
+// Uses xorriso to extract the existing EFI boot.cfg, patch the kernelopt= line to
+// add ks=cdrom:/KS.CFG, and produce a new ISO containing both ks.cfg and the patched
+// boot.cfg while preserving all El Torito / EFI boot records.
 func InjectKsConfig(isoBlob []byte, ksConfig string) ([]byte, error) {
 	if len(isoBlob) == 0 {
 		return nil, fmt.Errorf("iso blob is empty")
@@ -36,105 +37,130 @@ func InjectKsConfig(isoBlob []byte, ksConfig string) ([]byte, error) {
 		return nil, fmt.Errorf("ksConfig is empty")
 	}
 
-	// Try to use diskfs to properly inject ks.cfg into ISO 9660 filesystem
-	modifiedISO, err := injectKsConfigDiskfs(isoBlob, ksConfig)
-	if err == nil {
-		return modifiedISO, nil
-	}
-
-	// If diskfs fails (e.g., test ISO), fall back to append for testing
-	fmt.Printf("Note: Diskfs injection failed (%v), using append fallback for testing\n", err)
-	return injectKsConfigAppend(isoBlob, ksConfig)
+	return injectKsConfigXorriso(isoBlob, ksConfig)
 }
 
-// injectKsConfigDiskfs uses diskfs to properly add ks.cfg to the ISO 9660 filesystem
-// This is the production implementation for real ESXi ISOs.
-// The ks.cfg file is created as a proper ISO 9660 file entry at the root of the filesystem,
-// allowing ESXi's boot process to find and read the kickstart configuration.
-func injectKsConfigDiskfs(isoBlob []byte, ksConfig string) ([]byte, error) {
-	// Create temporary file for the ISO
-	tmpFile, err := os.CreateTemp("", "vmware-iso-*.iso")
+// injectKsConfigXorriso uses xorriso to:
+//  1. Extract /EFI/BOOT/BOOT.CFG from the input ISO
+//  2. Patch the kernelopt= line to add ks=cdrom:/KS.CFG
+//  3. Produce a new ISO containing ks.cfg and the patched boot.cfg while
+//     preserving all El Torito / EFI boot records from the original.
+//
+// See: https://techdocs.broadcom.com/us/en/vmware-cis/vsphere/vsphere/8-0/create-an-installer-iso-image-with-a-custom-installation-or-upgrade-script.html
+func injectKsConfigXorriso(isoBlob []byte, ksConfig string) ([]byte, error) {
+	tmpDir, err := os.MkdirTemp("", "vmware-iso-*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
+	defer os.RemoveAll(tmpDir)
 
-	// Write the ISO blob to temp file
-	if err := os.WriteFile(tmpPath, isoBlob, 0o644); err != nil {
+	inPath := filepath.Join(tmpDir, "input.iso")
+	if err := os.WriteFile(inPath, isoBlob, 0o644); err != nil {
 		return nil, fmt.Errorf("failed to write ISO to temp file: %w", err)
 	}
 
-	// Open the ISO file using diskfs file backend
-	// This returns a backend.Storage that diskfs can work with
-	backend, err := file.OpenFromPath(tmpPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open ISO file backend: %w", err)
-	}
-	defer backend.Close()
-
-	// Read the ISO 9660 filesystem from the backend
-	// ISO 9660 uses 2048-byte sectors with primary volume descriptor at sector 16
-	const (
-		sectorSize = int64(2048)
-		pvdOffset  = int64(16) * sectorSize
+	// List all files in the ISO so we can locate BOOT.CFG regardless of case or
+	// directory depth. ESXi ISO layouts vary across versions.
+	//nolint:gosec // paths constructed from os.MkdirTemp, not user input
+	cmdFind := exec.Command("xorriso",
+		"-indev", inPath,
+		"-find", "/", "-type", "f",
+		"--",
 	)
+	findOut, _ := cmdFind.CombinedOutput()
 
-	fs, err := iso9660.Read(backend, int64(len(isoBlob)), pvdOffset, sectorSize)
+	// Find a path that contains "/efi/" and ends with "boot.cfg" (both case-insensitive).
+	// xorriso prints absolute ISO paths wrapped in single quotes, one per line.
+	efiBcISOPath := ""
+	for _, line := range strings.Split(string(findOut), "\n") {
+		line = strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "'"))
+		upper := strings.ToUpper(line)
+		if strings.Contains(upper, "/EFI/") && strings.HasSuffix(upper, "BOOT.CFG") {
+			efiBcISOPath = line
+			break
+		}
+	}
+	if efiBcISOPath == "" {
+		return nil, fmt.Errorf("EFI BOOT.CFG not found in ISO; full xorriso file list:\n%s", string(findOut))
+	}
+	fmt.Printf("Found EFI boot.cfg at ISO path: %s\n", efiBcISOPath)
+
+	// Extract the EFI boot.cfg from the ISO.
+	// -osirrox on enables output to the local filesystem.
+	// -cpx copies a single file from the ISO to a local path.
+	extractedBootCfg := filepath.Join(tmpDir, "boot.cfg.orig")
+	//nolint:gosec // paths constructed from os.MkdirTemp, not user input
+	cmdExtract := exec.Command("xorriso",
+		"-indev", inPath,
+		"-osirrox", "on",
+		"-cpx", efiBcISOPath, extractedBootCfg,
+		"--",
+	)
+	if out, err := cmdExtract.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to extract EFI boot.cfg: %w\n%s", err, string(out))
+	}
+
+	bcContent, err := os.ReadFile(extractedBootCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read ISO 9660 filesystem: %w", err)
+		return nil, fmt.Errorf("failed to read extracted EFI boot.cfg: %w", err)
 	}
 
-	// Write ks.cfg content to the ISO filesystem
-	// ISO 9660 requires filenames to be UPPERCASE with version suffix
-	ksPath := "/KS.CFG;1"
-	ksData := []byte(ksConfig)
-
-	// Create and write the file to the ISO
-	// This creates a proper ISO 9660 file entry that can be read by ESXi
-	fsFile, err := fs.OpenFile(ksPath, int(os.O_CREATE|os.O_WRONLY))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ks.cfg in ISO: %w", err)
+	patched := appendKsToKernelopt(string(bcContent))
+	if patched == string(bcContent) {
+		return nil, fmt.Errorf("failed to patch EFI boot.cfg: kernelopt= line not found or ks= already present")
 	}
 
-	if _, err := fsFile.Write(ksData); err != nil {
-		fsFile.Close()
-		return nil, fmt.Errorf("failed to write ks.cfg content: %w", err)
+	ksLocalPath := filepath.Join(tmpDir, "ks.cfg")
+	if err := os.WriteFile(ksLocalPath, []byte(ksConfig), 0o644); err != nil {
+		return nil, fmt.Errorf("failed to write ks.cfg temp file: %w", err)
 	}
 
-	if err := fsFile.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close ks.cfg file: %w", err)
+	bootCfgLocalPath := filepath.Join(tmpDir, "boot.cfg")
+	if err := os.WriteFile(bootCfgLocalPath, []byte(patched), 0o644); err != nil {
+		return nil, fmt.Errorf("failed to write patched boot.cfg temp file: %w", err)
 	}
 
-	// Finalize the ISO to write all changes back to the backend
-	// This recalculates all metadata, updates extent allocations, and writes everything
-	opts := iso9660.FinalizeOptions{}
-	if err := fs.Finalize(opts); err != nil {
-		return nil, fmt.Errorf("failed to finalize ISO: %w", err)
+	// Produce the output ISO with ks.cfg and the patched boot.cfg injected.
+	// -boot_image any replay preserves El Torito / EFI boot records from -indev.
+	outPath := filepath.Join(tmpDir, "output.iso")
+	//nolint:gosec // paths constructed from os.MkdirTemp, not user input
+	cmdInject := exec.Command("xorriso",
+		"-indev", inPath,
+		"-outdev", outPath,
+		"-map", ksLocalPath, "/KS.CFG",
+		"-map", bootCfgLocalPath, efiBcISOPath,
+		"-boot_image", "any", "replay",
+	)
+	if out, err := cmdInject.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("xorriso inject failed: %w\n%s", err, string(out))
 	}
 
-	// Read the modified ISO from the temp file
-	modifiedISO, err := os.ReadFile(tmpPath)
+	modifiedISO, err := os.ReadFile(outPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read modified ISO: %w", err)
 	}
 
-	fmt.Printf("Successfully injected ks.cfg into ISO using diskfs (size: %d -> %d bytes)\n",
+	fmt.Printf("Successfully injected ks.cfg into ISO using xorriso (size: %d -> %d bytes)\n",
 		len(isoBlob), len(modifiedISO))
 
 	return modifiedISO, nil
 }
 
-// injectKsConfigAppend is a fallback that simply appends the config to the ISO blob
-// This is used when the ISO cannot be parsed as proper 9660 (e.g., minimal test ISOs).
-// This allows unit tests to pass without requiring full ISO 9660 infrastructure.
-// Note: This approach will NOT work with real ESXi ISOs, only with test data.
-func injectKsConfigAppend(isoBlob []byte, ksConfig string) ([]byte, error) {
-	ksData := []byte(ksConfig)
-	result := make([]byte, 0, len(isoBlob)+len(ksData)+50)
-	result = append(result, isoBlob...)
-	result = append(result, []byte("\n### VMWARE KICKSTART CONFIGURATION ###\n")...)
-	result = append(result, ksData...)
-	return result, nil
+// appendKsToKernelopt appends ks=cdrom:/KS.CFG to the kernelopt= line in a boot.cfg
+// file. If a ks= option is already present, or no kernelopt= line is found, the
+// original content is returned unchanged. ESXi installer requires this option to
+// locate the kickstart file on the CD-ROM without interactive input.
+func appendKsToKernelopt(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "kernelopt=") {
+			if strings.Contains(line, "ks=") {
+				// Already references a kickstart location; leave unchanged.
+				return content
+			}
+			lines[i] = strings.TrimRight(line, " \t") + " ks=cdrom:/KS.CFG"
+			return strings.Join(lines, "\n")
+		}
+	}
+	return content
 }

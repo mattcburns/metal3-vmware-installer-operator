@@ -70,16 +70,6 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Start reconciliation with initial phase
-	if installer.Status.Phase == "" {
-		installer.Status.Phase = vmwarev1.PhasePending
-		installer.Status.Message = "Provisioning workflow started"
-		if err := r.Status().Update(ctx, installer); err != nil {
-			log.Error(err, "Failed to update status to Pending")
-			return ctrl.Result{}, err
-		}
-	}
-
 	// Validate inputs
 	if installer.Spec.KsConfig == "" {
 		log.Error(fmt.Errorf("ksConfig is empty"), "Invalid VmwareInstaller")
@@ -87,9 +77,7 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Transition to Fetching phase
 	log.Info("Fetching ISO from registry", "image", installer.Spec.IsoRegistry.Image)
-	r.updateInstallerStatus(ctx, installer, vmwarev1.PhaseFetching, "Fetching ISO from registry", "")
 
 	// Get auth secret if specified
 	var authSecret *corev1.Secret
@@ -119,10 +107,7 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	log.Info("Successfully fetched ISO", "digest", inputDigest, "size", len(isoBlob))
 
-	// Transition to Processing phase
 	log.Info("Processing ISO with kickstart config")
-	r.updateInstallerStatus(ctx, installer, vmwarev1.PhaseProcessing,
-		"Injecting kickstart configuration into ISO", "")
 
 	// Inject ks.cfg into ISO
 	modifiedISO, err := iso.InjectKsConfig(isoBlob, installer.Spec.KsConfig)
@@ -135,10 +120,7 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	log.Info("Successfully injected ks.cfg", "modifiedSize", len(modifiedISO))
 
-	// Transition to Uploading phase
 	log.Info("Uploading modified ISO to registry")
-	r.updateInstallerStatus(ctx, installer, vmwarev1.PhaseUploading,
-		"Uploading modified ISO to registry", "")
 
 	// Determine output image tag
 	outputTag := installer.Spec.OutputImageTag
@@ -173,10 +155,7 @@ func (r *VmwareInstallerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	digestRef := baseRepo + "@" + outputDigest
 
-	// Transition to Provisioning phase
 	log.Info("Updating Bare Metal Host for provisioning", "bmh", installer.Spec.TargetHost.Name)
-	r.updateInstallerStatus(ctx, installer, vmwarev1.PhaseProvisioning,
-		"Updating Bare Metal Host for provisioning", outputDigest)
 
 	// Update the BMH to trigger provisioning
 	bmhClient := bmh.NewProvisioningClient(r.Client)
